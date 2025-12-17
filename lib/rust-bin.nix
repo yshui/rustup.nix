@@ -319,24 +319,7 @@ let
         componentSet.${rustHostPlatform}
         //
           # Profiles.
-          profiles
-        // {
-          # Legacy support for special pre-aggregated package.
-          # It has more components than `default` profile but less than `complete` profile.
-          rust =
-            let
-              pkg = mkProfile "legacy" [ "rust" ];
-            in
-            if profiles != { } then
-              trace ''
-                Rust ${manifest.date}:
-                Pre-aggregated package `rust` is not encouraged for stable channel since it contains almost all and uncertain components.
-                Consider use `default` profile like `rust-bin.stable.latest.default` and override it with extensions you need.
-                See README for more information.
-              '' pkg
-            else
-              pkg;
-        };
+          profiles;
 
     in
     # If the platform is not supported for the current version, return nothing here,
