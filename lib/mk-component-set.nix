@@ -16,11 +16,9 @@
   removeNulls,
 }:
 {
-  # Release version of the whole set.
-  version,
   # The host platform of this set.
   platform,
-  # Set of pname -> src
+  # Set of pname -> { src; version; }
   srcs,
   # { clippy.to = "clippy-preview"; }
   renames,
@@ -35,7 +33,7 @@ let
   inherit (stdenv) hostPlatform targetPlatform;
 
   mkComponent =
-    pname: src:
+    pname: spec:
     let
       # These components link to `librustc_driver*.so` or `libLLVM*.so`.
       linksToRustc = elem pname [
@@ -49,7 +47,8 @@ let
       ];
     in
     stdenvNoCC.mkDerivation rec {
-      inherit pname version src;
+      inherit pname;
+      inherit (spec) src version;
       name = "${pname}-${version}-${platform}";
 
       passthru.platform = platform;

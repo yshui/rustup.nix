@@ -3,16 +3,10 @@
 {
   lib,
   pkgs,
-  manifests,
-  nightly,
 }:
 let
   inherit (builtins)
-    compareVersions
-    fromTOML
     match
-    readFile
-    tryEval
     ;
 
   inherit (lib)
@@ -24,11 +18,7 @@ let
     elemAt
     filter
     flatten
-    foldl'
-    hasPrefix
-    head
     isString
-    length
     listToAttrs
     makeOverridable
     mapAttrs
@@ -58,123 +48,6 @@ let
   };
 
   mkAggregated = callPackage ./mk-aggregated.nix { };
-
-  # Manifest selector.
-  selectManifest =
-    {
-      channel,
-      date ? null,
-    }:
-    let
-      assertWith =
-        cond: msg: body:
-        if cond then body else throw msg;
-
-      # https://rust-lang.github.io/rustup/concepts/toolchains.html#toolchain-specification
-      # <channel> = stable|beta|nightly|<major.minor>|<major.minor.patch>
-
-      asVersion = match "[0-9]+\\.[0-9]+(\\.[0-9]+)?" channel;
-      asNightlyDate =
-        let
-          m = match "nightly-([0-9]+-[0-9]+-[0-9]+)" channel;
-        in
-        if m == null then null else elemAt m 0;
-      asBetaDate =
-        let
-          m = match "beta-([0-9]+-[0-9]+-[0-9]+)" channel;
-        in
-        if m == null then null else elemAt m 0;
-
-      maxWith = zero: f: foldl' (lhs: rhs: if lhs == zero || f lhs rhs < 0 then rhs else lhs) zero;
-
-      latestStableWithMajorMinor = maxWith "" compareVersions (
-        filter (hasPrefix (channel + ".")) (attrNames manifests.stable)
-      );
-
-    in
-    # "stable"
-    if channel == "stable" then
-      assertWith (
-        date == null
-      ) "Stable version with specific date is not supported" manifests.stable.latest
-    # "nightly"
-    else if channel == "nightly" then
-      manifests.nightly.${if date != null then date else "latest"}
-        or (throw "Nightly ${date} is not available")
-    # "beta"
-    else if channel == "beta" then
-      manifests.beta.${if date != null then date else "latest"} or (throw "Beta ${date} is not available")
-    # "1.49.0" or "1.49"
-    else if asVersion != null then
-      assertWith (date == null) "Stable version with specific date is not supported" (
-        # "1.49"
-        if asVersion == [ null ] then
-          manifests.stable.${latestStableWithMajorMinor} or (throw "No stable ${channel}.* is available")
-        # "1.49.0"
-        else
-          manifests.stable.${channel} or (throw "Stable ${channel} is not available")
-      )
-    # "beta-2021-01-01"
-    else if asBetaDate != null then
-      assertWith (date == null) "Cannot specify date in both `channel` and `date`"
-        manifests.beta.${asBetaDate} or (throw "Beta ${asBetaDate} is not available")
-    # "nightly-2021-01-01"
-    else if asNightlyDate != null then
-      assertWith (date == null) "Cannot specify date in both `channel` and `date`"
-        manifests.nightly.${asNightlyDate} or (throw "Nightly ${asNightlyDate} is not available")
-    # Otherwise
-    else
-      throw "Unknown channel: ${channel}";
-
-  # Select a toolchain and aggregate components by rustup's `rust-toolchain` file format.
-  # See: https://rust-lang.github.io/rustup/concepts/profiles.html
-  # Or see source: https://github.com/rust-lang/rustup/blob/84974df1387812269c7b29fa5f3bb1c6480a6500/doc/src/overrides.md#the-toolchain-file
-  fromRustupToolchain =
-    {
-      path ? null,
-      channel ? null,
-      profile ? null,
-      components ? [ ],
-      targets ? [ ],
-    }:
-    if path != null then
-      throw "`path` is not supported, please directly add it to your PATH instead"
-    else if channel == null then
-      throw "`channel` is required"
-    else
-      let
-        toolchain = toolchainFromManifest (selectManifest {
-          inherit channel;
-        });
-        profile' = if profile == null then "default" else profile;
-        pkg =
-          if toolchain._profiles != { } then
-            toolchain._profiles.${profile'} or (throw ''
-              Rust ${toolchain._version} doesn't have profile `${profile'}`.
-              Available profiles are: ${concatStringsSep ", " (attrNames toolchain._profiles)}
-            '')
-          # Fallback to package `rust` when profiles are not supported and not specified.
-          else if profile == null then
-            toolchain.rust
-          else
-            throw "Cannot select profile `${profile'}` since rust ${toolchain._version} is too early to support profiles";
-      in
-      pkg.override {
-        extensions = components;
-        inherit targets;
-      };
-
-  # Same as `fromRustupToolchain` but read from a `rust-toolchain` file (legacy one-line string or in TOML).
-  fromRustupToolchainFile =
-    path:
-    let
-      content = readFile path;
-      legacy = match "([^\r\n]+)\r?\n?" content;
-    in
-    if legacy != null then
-      fromRustupToolchain { channel = head legacy; }
-    else
-      fromRustupToolchain (fromTOML content).toolchain;
 
   mkComponentSrc =
     { url, sha256 }:
@@ -314,16 +187,20 @@ let
   # Generate the toolchain set from a parsed manifest.
   #
   # Manifest files are organized as follow:
-  # { date = "2017-03-03";
-  #   pkg.cargo.version= "0.18.0-nightly (5db6d64 2017-03-03)";
-  #   pkg.cargo.target.x86_64-unknown-linux-gnu = {
-  #     available = true;
-  #     hash = "abce..."; # sha256
-  #     url = "https://static.rust-lang.org/dist/....tar.gz";
-  #     xz_hash = "abce..."; # sha256
-  #     xz_url = "https://static.rust-lang.org/dist/....tar.xz";
-  #   };
-  # }
+  #
+  # ```
+  # manifest-version = "2"
+  # date = "2017-03-03";
+  # [pkg.cargo]
+  # version= "0.18.0-nightly (5db6d64 2017-03-03)";
+  #
+  # [pkg.cargo.target.x86_64-unknown-linux-gnu]
+  # available = true;
+  # hash = "abce..."; # sha256
+  # url = "https://static.rust-lang.org/dist/....tar.gz";
+  # xz_hash = "abce..."; # sha256
+  # xz_url = "https://static.rust-lang.org/dist/....tar.xz";
+  # ```
   #
   # The packages available usually are:
   #   cargo, rust-analysis, rust-docs, rust-src, rust-std, rustc, and
@@ -367,21 +244,24 @@ let
       componentSet = mapAttrs (
         platform: _:
         mkComponentSet {
-          inherit (manifest) version renames;
+          inherit (manifest) renames;
           inherit platform;
           srcs = removeNulls (
             mapAttrs (
               compName:
-              { target, ... }:
+              { target, version, ... }:
               let
                 content = target.${platform} or target."*" or null;
               in
               if content == null then
                 null
               else
-                mkComponentSrc {
-                  url = content.xz_url;
-                  sha256 = content.xz_hash;
+                {
+                  src = mkComponentSrc {
+                    url = content.xz_url;
+                    sha256 = content.xz_hash;
+                  };
+                  inherit version;
                 }
             ) manifest.pkg
           );
@@ -399,10 +279,10 @@ let
             }:
             mkAggregated {
               pname = "rust-${name}";
-              inherit (manifest) version date;
+              inherit (manifest) date;
               availableComponents = componentSet.${rustHostPlatform};
               selectedComponents = resolveComponents {
-                name = "rust-${name}-${manifest.version}";
+                name = "rust-${name}-${manifest.date}";
                 inherit
                   allPlatformSet
                   allComponentSet
@@ -410,7 +290,11 @@ let
                   profileComponents
                   targetExtensions
                   ;
-                inherit (manifest) targetComponentsList;
+                targetComponentsList = [
+                  "rust-std"
+                  "rustc-dev"
+                  "rustc-docs"
+                ];
                 extensions = extensions;
                 targets = unique (
                   [
@@ -445,7 +329,7 @@ let
             in
             if profiles != { } then
               trace ''
-                Rust ${manifest.version}:
+                Rust ${manifest.date}:
                 Pre-aggregated package `rust` is not encouraged for stable channel since it contains almost all and uncertain components.
                 Consider use `default` profile like `rust-bin.stable.latest.default` and override it with extensions you need.
                 See README for more information.
@@ -462,7 +346,7 @@ let
       # Internal use.
       _components = componentSet;
       _profiles = profiles;
-      _version = manifest.version;
+      _date = manifest.date;
       _manifest = manifest;
     };
 
@@ -483,9 +367,8 @@ let
       target ? rustTargetPlatform,
     }:
     let
-      hashToSrc =
-        compName: hash:
-        fetchurl {
+      hashToSrc = compName: hash: {
+        src = fetchurl {
           url =
             if compName == "rust-src" then
               "https://ci-artifacts.rust-lang.org/rustc-builds/${rev}/${compName}-nightly.tar.xz"
@@ -493,8 +376,9 @@ let
               "https://ci-artifacts.rust-lang.org/rustc-builds/${rev}/${compName}-nightly-${target}.tar.xz";
           inherit hash;
         };
-      components' = mkComponentSet {
         inherit version;
+      };
+      components' = mkComponentSet {
         platform = target;
         srcs = mapAttrs hashToSrc components;
         # We cannot know aliases in this case.
@@ -507,56 +391,7 @@ let
       selectedComponents = attrValues components';
     };
 
-  # Select latest nightly toolchain which makes selected profile builds.
-  # Some components are missing in some nightly releases.
-  # Usage:
-  # `selectLatestNightlyWith (toolchain: toolchain.default.override { extensions = ["llvm-tools-preview"]; })`
-  selectLatestNightlyWith =
-    selector:
-    let
-      nightlyDates = attrNames (removeAttrs nightly [ "latest" ]);
-      dateLength = length nightlyDates;
-      go =
-        idx:
-        let
-          ret = selector (nightly.${elemAt nightlyDates idx});
-        in
-        if idx == 0 then
-          ret
-        else if dateLength - idx >= 256 then
-          trace "Failed to select nightly version after 100 tries" ret
-        else if ret != null && (tryEval ret.drvPath).success then
-          ret
-        else
-          go (idx - 1);
-    in
-    go (length nightlyDates - 1);
-
 in
-# For each channel:
-#   rust-bin.stable.latest.{minimal,default,complete} # Profiles.
-#   rust-bin.stable.latest.rust   # Pre-aggregate from upstream.
-#   rust-bin.stable.latest.cargo  # Components...
-#   rust-bin.stable.latest.rustc
-#   rust-bin.stable.latest.rust-docs
-#   ...
-#
-# For a specific version of stable:
-#   rust-bin.stable."1.47.0".default
-#
-# For a specific date of beta:
-#   rust-bin.beta."2021-01-01".default
-#
-# For a specific date of nightly:
-#   rust-bin.nightly."2020-01-01".default
-mapAttrs (channel: mapAttrs (version: toolchainFromManifest)) manifests
-// {
-  inherit fromRustupToolchain fromRustupToolchainFile;
-  inherit selectLatestNightlyWith;
-  inherit fromRustcRev;
-
-  _internal = {
-    inherit toolchainFromManifest;
-    inherit selectManifest;
-  };
+{
+  inherit fromRustcRev toolchainFromManifest;
 }

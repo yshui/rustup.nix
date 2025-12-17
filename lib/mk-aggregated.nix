@@ -9,7 +9,6 @@
 }:
 {
   pname,
-  version,
   date,
   selectedComponents,
   availableComponents ? selectedComponents,
@@ -19,8 +18,9 @@ let
   inherit (stdenv) targetPlatform;
 in
 symlinkJoin {
-  name = pname + "-" + version;
-  inherit pname version;
+  name = pname + "-" + date;
+  version = date;
+  inherit pname;
 
   paths = selectedComponents;
 
