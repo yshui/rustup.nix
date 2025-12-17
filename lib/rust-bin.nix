@@ -27,7 +27,6 @@ let
     optionalAttrs
     replaceStrings
     substring
-    trace
     unique
     ;
 
