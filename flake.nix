@@ -4,7 +4,7 @@
   '';
 
   outputs =
-    { self }:
+    _:
     let
       overlay = import ./.;
     in
